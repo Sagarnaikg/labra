@@ -1,19 +1,5 @@
 # Labra mapping templates: design notes
 
-**Status: complete.** Every behaviour in the brief is implemented and tested
-(`pytest`: 62 passing, no network). Section 9 lists what was scoped out and how
-to extend it.
-
-**Where the brief's questions are answered**
-
-| Brief asks for | Section |
-|---|---|
-| Schema: where things live, what a new field writes, what I refuse to store | [3](#3-schema), [4](#4-introducing-a-new-field) |
-| 10,000 templates, one new field: time, cost, locks | [4](#4-introducing-a-new-field) |
-| Several CRM objects | [6](#6-building-a-referral) |
-| Rate limits at scale | [7](#7-rate-limits-at-scale) |
-| One thing left out | [9](#9-scoped-out-and-how-to-extend) |
-
 ## Contents
 
 1. [The problem](#1-the-problem)
