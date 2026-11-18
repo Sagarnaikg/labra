@@ -4,7 +4,9 @@ Small HTTP service that maps CRM fields (Salesforce / HubSpot) onto Labra referr
 fields, picks up newly introduced Labra fields on templates saved earlier, and
 builds a validated referral from a (fake) CRM.
 
-Stack: Python 3.11+, FastAPI, Pydantic v2, SQLite, pytest.
+Stack: Python 3.11+ (tested on 3.13), FastAPI, Pydantic v2, SQLite, pytest.
+
+Design write-up and trade-offs: [NOTES.md](NOTES.md).
 
 ## Setup
 
@@ -182,6 +184,87 @@ CREATE TABLE IF NOT EXISTS template_mappings (
 );
 ```
 
-## Walkthrough
+## Walkthrough (curl)
 
-_TODO: create Northwind, add `customer_duns`, GET the template, call `crm-field-values`._
+Start the API in one terminal (`uvicorn app.main:create_app --factory --reload`),
+then run these in another. The running app uses a demo FakeCrm seeded with
+`opp-100`, see [app/demo.py](app/demo.py).
+
+**1. Create Northwind's template**
+
+```bash
+curl -s -X POST localhost:8000/mapping-templates -H 'Content-Type: application/json' -d '{
+  "id": "northwind-default", "name": "Northwind default", "crm_type": "salesforce",
+  "mappings": [
+    {"labra_field": "company_name", "crm_object": "Account", "crm_field": "Name"},
+    {"labra_field": "website", "crm_object": "Account", "crm_field": "Website"},
+    {"labra_field": "country", "crm_object": "Account", "crm_field": "BillingCountry"},
+    {"labra_field": "expected_monthly_revenue", "crm_object": "Opportunity", "crm_field": "Amount"},
+    {"labra_field": "target_close_date", "crm_object": "Opportunity", "crm_field": "CloseDate"},
+    {"labra_field": "primary_sales_rep_email", "crm_object": "Contact", "crm_field": "Email"}
+  ]}'
+```
+
+**2. Introduce `customer_duns` (after Northwind was saved)**
+
+```bash
+curl -s -X POST localhost:8000/labra-fields -H 'Content-Type: application/json' \
+  -d '{"labra_field": "customer_duns", "label": "Customer DUNS", "required": false}'
+```
+
+**3. GET the old template: `customer_duns` is there, unmapped; `company_name` is still `Account.Name`**
+
+```bash
+curl -s localhost:8000/mapping-templates/northwind-default | python -m json.tool
+```
+
+```json
+{"labra_field": "customer_duns", "label": "Customer DUNS", "required": false,
+ "crm_object": null, "crm_field": null, "mapped": false, "unused": false}
+```
+
+**4. Optional: mark it unused, or try to hide a required field (rejected)**
+
+```bash
+curl -s -X PATCH localhost:8000/mapping-templates/northwind-default/fields/customer_duns \
+  -H 'Content-Type: application/json' -d '{"unused": true}'
+curl -s -X PATCH localhost:8000/mapping-templates/northwind-default/fields/company_name \
+  -H 'Content-Type: application/json' -d '{"unused": true}'
+```
+
+**5. Build the referral for `opp-100`**
+
+```bash
+curl -s -X POST localhost:8000/mapping-templates/northwind-default/crm-field-values \
+  -H 'Content-Type: application/json' -d '{"record_id": "opp-100"}' | python -m json.tool
+```
+
+```json
+{
+  "referral": {
+    "company_name": "Northwind Traders",
+    "website": "https://northwind.example",
+    "country": "United States",
+    "expected_monthly_revenue": 5000,
+    "target_close_date": "<today + 30 days>",
+    "primary_sales_rep_email": "ada@northwind.example"
+  },
+  "errors": []
+}
+```
+
+## Project layout
+
+```
+app/
+  main.py              create_app(crm, db, today, sleep): the seam tests use
+  db.py, schema.sql    SQLite schema + idempotent seed of the six fields
+  templates.py         create / get template, per-field choices (map, unused)
+  fields.py            introduce / update a Labra field
+  crm.py               FakeCrm, fetch plan (one call per object), single retry
+  referral.py          Pydantic referral model built from the field list + error translation
+  crm_field_values.py  POST .../crm-field-values
+  errors.py            shared error shape
+  demo.py              demo FakeCrm for local runs
+tests/                 pytest, no network; FakeCrm injected, "today" frozen
+```

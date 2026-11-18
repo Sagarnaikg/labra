@@ -1,63 +1,195 @@
-# Notes
+# NOTES
 
-_Final write-up goes here at the end (schema, 10k templates, several CRM objects,
-rate limits, one thing left out)._
+**Status: complete.** Every behaviour in the brief is implemented and covered by
+tests (`pytest`: 62 passing, no network). Limits and things I did not build are
+listed at the end.
 
-## Working log (rough, cleaned up at the end)
+The one idea behind the design: **a template stores only the customer's own
+choices. The list of Labra fields lives in one table and is joined in when a
+template is read.** Nothing is ever copied from the field list onto a template,
+so there is nothing to backfill when the list grows.
 
-- Chose SQLite: real database, zero setup for the reviewer.
-- `create_app(crm)` takes the CRM client as a parameter so tests inject `FakeCrm`.
-- Schema = 3 tables. Field list lives only in `labra_fields`; templates store only the
-  customer's choices in `template_mappings`. A new field = 1 row, 0 template rows written.
-- DB constraints back up the API checks: FK to `labra_fields`, used mapping needs
-  object+field, UNIQUE (template, crm_object, crm_field).
-- Seed uses INSERT OR IGNORE so restarts never undo a label/required change.
-- Switched to `uvicorn app.main:create_app --factory` so importing the app in tests
-  never creates a stray `labra.db`.
-- GET and crm-field-values both go through one `load_template()` (LEFT JOIN of
-  labra_fields + template_mappings), so "the template the customer sees" has one definition.
-- Create validates everything and returns ALL errors, then writes template + mappings in one
-  transaction, so a rejected create stores nothing.
-- Request model uses loose `str` types on purpose so business-rule failures (blank name,
-  bad crm_type) come back with our `fix`, not a generic schema error.
-- Duplicate CRM value check is case-insensitive (Salesforce API names are).
-- Added 409 on duplicate template id (not in the spec, but silently overwriting would be worse).
-- New field endpoint is an upsert (`POST /labra-fields`, ON CONFLICT DO UPDATE): first call
-  introduces, later calls update label/required. Touches only `labra_fields`.
-- Test proves "no second write": snapshot of every templates + template_mappings row is
-  identical before/after introducing customer_duns.
-- 10k test: 10,000 templates x 6 mappings seeded, introduce field, still 0 template rows
-  written; the request itself is one INSERT. GET per template is an indexed LEFT JOIN on
-  the (template_id, labra_field) primary key.
-- Unused is stored per template in `template_mappings.unused`; label lives in
-  `labra_fields`, so changing the label cannot reset the choice.
-- Marking unused clears crm_object/crm_field (frees that CRM value for another field).
-- Open question: if a field is later flipped to required=true, templates that marked it
-  unused/unmapped will fail referral validation with a "map this field" fix. I chose not
-  to block the flip; AWS owns the list.
-- CRM layer (`app/crm.py`): `plan_fetches()` groups the template's mapped+used fields by
-  crm_object in template order, so Northwind = 3 fetches. Ten fields on one object = one
-  call. All-unused object = not fetched.
-- `fetch_with_retry()` wraps `crm.fetch`: one RateLimited -> sleep retry_after_ms -> one more
-  try; a second RateLimited propagates. This is where a shared limiter would wrap later.
-- `fetch_all()` keeps rate-limited and not-found objects separate from fetched values, so
-  the referral step can validate only objects that returned data.
-- Referral model is built per request with `create_model` from the template's merged
-  field list (same `load_template()` as GET), so a new field is on the model with no code
-  change. `FIELD_RULES` is a map of *format rules* by field name, not a field list: a field
-  with no rule is validated as non-blank text; a rule with no field is unused. Can't drift
-  into a missing/extra referral key. (Trade-off: a brand-new field that needs a special
-  format, like DUNS, needs a rule in code. Alternative: store a `value_type` column.)
-- Optional + unmapped or empty value -> key omitted. Required + missing/blank/unmapped -> error.
-- Pydantic errors are translated per field into message + fix naming Object.Field and the
-  CRM (Salesforce/HubSpot). One error per field; raw "Value error" text never leaks.
-- Rate limited twice -> 503 + Retry-After, one error naming the object; its fields are
-  skipped (not reported as missing). Other objects are still fetched and validated.
-- All objects not found -> 404. Some not found -> 422 naming the object, its fields skipped.
-- Website uses a custom urlparse check, not HttpUrl, because HttpUrl rewrites
-  "https://northwind.example" to "https://northwind.example/" (breaks the success body).
-- Gotcha hit: `StringConstraints` after a `BeforeValidator` in one Annotated is silently
-  dropped by Pydantic (blank company name passed). Fixed by nesting the constrained str.
-- "Today" is injected (`create_app(today=...)`), frozen to 2026-11-18 in tests.
-- Without an injected CRM, `create_app()` uses a seeded demo FakeCrm so the README
-  walkthrough works with uvicorn; routes never construct a client.
+---
+
+## 1. Schema
+
+```sql
+labra_fields      (name PK, label, required, sort_order, created_at, updated_at)
+templates         (id PK, name, crm_type CHECK IN ('salesforce','hubspot'), created_at, updated_at)
+template_mappings (template_id FK, labra_field FK -> labra_fields.name,
+                   crm_object NULL, crm_field NULL, unused 0/1,
+                   PRIMARY KEY (template_id, labra_field),
+                   UNIQUE (template_id, crm_object, crm_field),
+                   CHECK (unused = 1 OR (crm_object IS NOT NULL AND crm_field IS NOT NULL)))
+```
+
+Full DDL is in [app/schema.sql](app/schema.sql) and the README.
+
+**Where things live**
+- **The shared Labra field list:** `labra_fields`, one row per field. Owned by Labra/AWS.
+- **Northwind's CRM mappings:** `template_mappings`, six rows keyed by
+  `('northwind-default', labra_field)`. Each row holds `Account.Name` and so on, or `unused = 1`.
+- **A field with no row is "not mapped".** `GET` builds the template from
+  `labra_fields LEFT JOIN template_mappings`. The same `load_template()` also drives the
+  CRM fetch plan and the referral model, so "the template the customer sees" has one
+  definition in code.
+
+**Introducing `customer_duns`**
+- `POST /labra-fields {"labra_field": "customer_duns", "label": "Customer DUNS", "required": false}`
+- **Written:** 1 row inserted into `labra_fields`.
+- **Not written:** every `templates` row and every `template_mappings` row.
+- The next `GET` of Northwind joins the new row in. `customer_duns` has no Northwind row,
+  so it comes back with `crm_object: null`, `crm_field: null`, `mapped: false`.
+  `company_name` still reads `Account.Name`, because nothing touched that row.
+- `test_introduce_customer_duns_shows_on_template_saved_before` snapshots every
+  template and mapping row before the call and asserts they are identical afterwards.
+- Calling the endpoint again is an upsert. It changes only the label or `required`, so
+  mappings and `unused` choices stay as the customer left them. The choice lives on
+  `template_mappings` and the label on `labra_fields`.
+
+**What I refuse to store**
+- A copy of the default field JSON on each template. That copy is exactly what goes
+  stale when AWS adds a field.
+- Without it, someone would have had to open each of the saved templates and paste
+  `customer_duns` in, or write a one-off script that rewrites every JSON document.
+
+## 2. 10,000 existing templates, one new AWS field
+
+- **Cost of the deploy:** one `INSERT` into `labra_fields`. It takes about a millisecond and
+  does not depend on the number of templates. There is no migration and no backfill job.
+- **Evidence:** `test_new_field_reaches_10000_existing_templates_without_writing_them`
+  seeds 10,000 templates × 6 mappings, introduces the field, and asserts:
+  - zero template rows changed
+  - the request took under 1 second (in practice a few ms)
+  - templates t-0, t-4999 and t-9999 all show `customer_duns` unmapped
+- **What is locked:** in SQLite, the database write lock for the length of a one-row insert.
+  In Postgres, one new row. Templates stay readable and editable throughout. A referral
+  being built at that moment sees either the old or the new list, and both are valid,
+  because a new field is optional by default.
+- **What my choice costs instead:**
+  1. **Every read is a join.** It is an indexed lookup on the
+     `(template_id, labra_field)` primary key, so the cost grows with the number of fields
+     (6–7), not the number of templates. It is cheap, but it happens on every GET and every
+     referral, where a copied document would be a single key lookup.
+  2. **Flipping a field to `required: true` affects every template at once.** Templates that
+     have not mapped it start failing referral validation, with a fix that names the field.
+     That is the correct signal, but the rollout should be: introduce it optional, let
+     customers map it, then flip it. A query that lists the templates still missing a
+     required field would support that, and it is one `LEFT JOIN … WHERE m.labra_field IS NULL`.
+  3. **The field list is global.** Customers cannot invent fields. That matches the brief.
+- **The alternative I rejected:** a full JSON copy per template plus a migration script.
+  It would make 10,000 row rewrites per new field, has to be batched to avoid long locks,
+  and races with customers who are editing their templates during the migration.
+
+## 3. Several CRM objects
+
+- **How the fetch list is built:** `plan_fetches()` in [app/crm.py](app/crm.py) walks the
+  merged template in field order. It keeps only fields that are mapped and not unused, and
+  groups their `crm_field`s by `crm_object`. Northwind becomes:
+  - Account: Name, Website, BillingCountry
+  - Opportunity: Amount, CloseDate
+  - Contact: Email
+
+  That is 3 calls.
+- **New fields:** a newly introduced field is fetched only once it is mapped. It then joins
+  its object's existing call (`Account` gains `DUNS__c`), so there is still no extra call.
+- **Unused fields:** they are not fetched. If all of Contact's fields are unused, Contact
+  is not called at all.
+- **Ten fields on one object:** still one call, with a list of ten field names.
+  Duplicates are dropped.
+- **Failures are per object.** An object that is rate limited twice, or has no record, is
+  reported once by name. Its fields are skipped rather than reported as missing, and the
+  other objects are still validated.
+
+## 4. Rate limits at scale
+
+**The load:** 200 prepares/min × 3 objects = 600 calls/min. The CRM allows 100 per 10 s,
+which is also 600/min. That is exactly at the limit on average, so any burst goes over.
+Several API processes each counting on their own cannot see that.
+
+**Where the limiter lives:** in a shared Redis, called from `fetch_with_retry()` in
+[app/crm.py](app/crm.py). That function is the single place every CRM call goes through,
+and it already wraps `FakeCrm.fetch` / `crm.fetch` with the one retry. The limiter goes
+directly around that `crm.fetch(...)` line: acquire first, then call.
+
+**Key:** `crm_rl:{crm_type}:{org_id or portal_id}`. The limit belongs to the customer's CRM
+account (their Salesforce org or HubSpot portal), not to our process or our template.
+- It is a token bucket in a small Lua script, so acquire is atomic across processes:
+  capacity 100, refill 10/s.
+- **Reserve every token a prepare needs in one step.** For Northwind that is 3. A prepare
+  then either gets all its calls or none, instead of fetching Account and stalling on Contact.
+- When the CRM still answers `RateLimited` with a retry-after, write
+  `crm_cooldown:{key}` with that TTL so every process backs off, not only the one that was told.
+
+**A prepare that cannot get a slot within ~2 s:**
+- Don't hold the HTTP request open. Put the prepare on a queue for that CRM account and
+  return `202 Accepted` with a job id. A worker per key drains the queue at the bucket rate.
+  The caller polls or gets a callback.
+- If queuing is not available, return `503` with `Retry-After`. That is what the current
+  double-rate-limit path already does.
+
+**What is implemented today:** only the single retry.
+- On the first `RateLimited`, sleep `retry_after_ms`, then call `crm.fetch` once more.
+- On a second `RateLimited`, the request ends with **503 + `Retry-After`** and one error
+  naming the object ("The Salesforce rate limit held for Opportunity…").
+- `expected_monthly_revenue` and `target_close_date` are not reported as missing.
+- Tests: `test_one_rate_limit_is_retried_and_referral_succeeds`,
+  `test_rate_limit_twice_names_opportunity_and_not_its_fields`.
+
+## 5. One thing left out: optimistic concurrency on templates
+
+Two people editing the same template today means the last write wins. Here is where the
+fix would attach:
+- **Store:** add `templates.version INTEGER NOT NULL DEFAULT 1`. Return it from `GET` as
+  `version` and as an `ETag`.
+- **Write path:** `PATCH /mapping-templates/{id}/fields/{field}` (and any future full-template
+  update) requires `If-Match: <version>`.
+- **In the same transaction:** first
+  `UPDATE templates SET version = version + 1 WHERE id = ? AND version = ?`.
+  - 0 rows updated means someone else saved first. Roll back and return `409` with a fix
+    like "Reload the template and reapply your change".
+  - 1 row updated means it is safe to write the mapping row.
+- **Not needed for field changes:** introducing a Labra field never bumps template
+  versions, because it does not write templates. A customer's edit cannot conflict with
+  AWS adding a field.
+
+---
+
+## Decisions worth flagging
+
+- **Field format rules are code, the field list is data.** The referral Pydantic model is
+  built per request with `create_model` from the template's field list, so there is no
+  second field list in code. `FIELD_RULES` in [app/referral.py](app/referral.py) maps a
+  field name to *how* to validate it (URL, country, > 0, date, email, 9-digit DUNS).
+  It cannot drift into a missing or extra referral key:
+  - A field with no rule is validated as non-blank text.
+  - A rule for a field that is not on the list is never used.
+
+  The cost is that a new field that needs a special format, like DUNS, also needs one
+  entry in code. The next step would be a `value_type` column on `labra_fields`, so the
+  format is chosen when the field is introduced.
+- **Rate limited twice returns `503`, not `422`.** The upstream CRM refused us; the
+  customer's data is not wrong.
+- **Extras not in the brief:**
+  - `409` on a duplicate template id, instead of silently overwriting.
+  - The duplicate `crm_object + crm_field` check ignores case, because Salesforce API
+    names are case-insensitive.
+  - Malformed request bodies come back in the same error shape.
+- **Website validation uses `urlparse`, not `HttpUrl`.** `HttpUrl` rewrites
+  `https://northwind.example` to `…example/`, which breaks the expected success body.
+- **A Pydantic gotcha I hit:** putting `StringConstraints` after a `BeforeValidator` in the
+  same `Annotated` silently drops `min_length`, so a blank company name passed. The
+  invalid-seed test caught it, and I fixed it by nesting the constrained `str`.
+- **Injected dependencies:** "today" is injected (`create_app(today=...)`) and frozen to
+  2026-11-18 in tests. `sleep` is injectable too. Routes never construct a CRM client.
+  Run without one, `create_app()` uses a seeded demo FakeCrm so the README walkthrough works.
+
+## Not built / limits
+
+- **No full-template update or delete endpoint.** Edits go through the per-field `PATCH`.
+- **No delete or rename for a Labra field.** Delete is blocked by the FK from
+  `template_mappings`. It would need a "retired" flag rather than a hard delete.
+- **CRM calls run one after another.** With a real client they could run concurrently
+  (`asyncio.gather`), still one call per object.
+- **Not built, as the brief asks:** the shared limiter, queue and cache, plus auth, a UI,
+  and real Salesforce or HubSpot clients.
