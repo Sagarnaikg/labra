@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local database
+*.db
+*.sqlite3
+
+# Assignment brief (confidential, keep out of the repo)
+*.pdf
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
