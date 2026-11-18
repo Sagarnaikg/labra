@@ -22,3 +22,16 @@ rate limits, one thing left out)._
   bad crm_type) come back with our `fix`, not a generic schema error.
 - Duplicate CRM value check is case-insensitive (Salesforce API names are).
 - Added 409 on duplicate template id (not in the spec, but silently overwriting would be worse).
+- New field endpoint is an upsert (`POST /labra-fields`, ON CONFLICT DO UPDATE): first call
+  introduces, later calls update label/required. Touches only `labra_fields`.
+- Test proves "no second write": snapshot of every templates + template_mappings row is
+  identical before/after introducing customer_duns.
+- 10k test: 10,000 templates x 6 mappings seeded, introduce field, still 0 template rows
+  written; the request itself is one INSERT. GET per template is an indexed LEFT JOIN on
+  the (template_id, labra_field) primary key.
+- Unused is stored per template in `template_mappings.unused`; label lives in
+  `labra_fields`, so changing the label cannot reset the choice.
+- Marking unused clears crm_object/crm_field (frees that CRM value for another field).
+- Open question: if a field is later flipped to required=true, templates that marked it
+  unused/unmapped will fail referral validation with a "map this field" fix. I chose not
+  to block the flip; AWS owns the list.

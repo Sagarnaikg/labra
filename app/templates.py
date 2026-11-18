@@ -259,3 +259,103 @@ def create_template(body: TemplateCreate, request: Request) -> TemplateOut:
 @router.get("/{template_id}", response_model=TemplateOut)
 def get_template(template_id: str, request: Request) -> TemplateOut:
     return load_template(_db(request), template_id)
+
+
+class FieldChoice(BaseModel):
+    """One customer choice for one Labra field on one template.
+
+    {"unused": true}                                      -> hide an optional field
+    {"crm_object": "Account", "crm_field": "DUNS__c"}     -> map it
+    {"unused": false}                                     -> back to unmapped
+    """
+    unused: bool = False
+    crm_object: str | None = None
+    crm_field: str | None = None
+
+
+@router.patch("/{template_id}/fields/{labra_field}", response_model=TemplateOut)
+def set_field_choice(template_id: str, labra_field: str, body: FieldChoice, request: Request) -> TemplateOut:
+    """Change one field on one template. Writes at most one template_mappings row."""
+    db = _db(request)
+    load_template(db, template_id)  # 404 for an unknown template
+
+    with db.connect() as conn:
+        field = load_labra_fields(conn).get(labra_field)
+        if field is None:
+            raise not_found(
+                field=labra_field, received=labra_field,
+                message=f"'{labra_field}' is not on the shared Labra field list.",
+                fix="Remove that mapping or add the field first.",
+            )
+        required = bool(field["required"])
+        obj = (body.crm_object or "").strip()
+        fld = (body.crm_field or "").strip()
+
+        if body.unused:
+            if required:
+                raise ApiError(422, [ErrorItem(
+                    field=labra_field, received=True,
+                    message=f"'{labra_field}' is required by AWS and cannot be marked unused.",
+                    fix=f"Keep {labra_field} mapped; it is required by AWS.",
+                )])
+            conn.execute(
+                """
+                INSERT INTO template_mappings (template_id, labra_field, crm_object, crm_field, unused)
+                VALUES (?, ?, NULL, NULL, 1)
+                ON CONFLICT (template_id, labra_field)
+                DO UPDATE SET crm_object = NULL, crm_field = NULL, unused = 1
+                """,
+                (template_id, labra_field),
+            )
+
+        elif obj or fld:
+            if not (obj and fld):
+                raise ApiError(422, [ErrorItem(
+                    field=labra_field, crm_object=obj or None, crm_field=fld or None,
+                    received={"crm_object": body.crm_object, "crm_field": body.crm_field},
+                    message=f"'{labra_field}' needs both a CRM object and a CRM field.",
+                    fix="Fill both, or mark the field unused.",
+                )])
+            clash = conn.execute(
+                """
+                SELECT labra_field FROM template_mappings
+                WHERE template_id = ? AND labra_field <> ?
+                  AND crm_object = ? COLLATE NOCASE AND crm_field = ? COLLATE NOCASE
+                """,
+                (template_id, labra_field, obj, fld),
+            ).fetchone()
+            if clash:
+                raise ApiError(422, [ErrorItem(
+                    field=labra_field, crm_object=obj, crm_field=fld, received=f"{obj}.{fld}",
+                    message=f"{obj}.{fld} already fills '{clash['labra_field']}'.",
+                    fix="Pick one Labra field for that CRM value.",
+                )])
+            conn.execute(
+                """
+                INSERT INTO template_mappings (template_id, labra_field, crm_object, crm_field, unused)
+                VALUES (?, ?, ?, ?, 0)
+                ON CONFLICT (template_id, labra_field)
+                DO UPDATE SET crm_object = excluded.crm_object, crm_field = excluded.crm_field, unused = 0
+                """,
+                (template_id, labra_field, obj, fld),
+            )
+
+        else:
+            # Neither unused nor a mapping: back to "not mapped".
+            if required:
+                raise ApiError(422, [ErrorItem(
+                    field=labra_field, received=None,
+                    message=f"'{labra_field}' is required by AWS and must stay mapped.",
+                    fix="Send crm_object and crm_field for this field.",
+                )])
+            conn.execute(
+                "DELETE FROM template_mappings WHERE template_id = ? AND labra_field = ?",
+                (template_id, labra_field),
+            )
+
+        conn.execute(
+            "UPDATE templates SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (template_id,),
+        )
+
+    return load_template(db, template_id)

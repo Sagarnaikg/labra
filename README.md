@@ -80,6 +80,30 @@ Returns every current Labra field. Unmapped fields have `crm_object: null`,
 }
 ```
 
+### `POST /labra-fields`: introduce a Labra field (or update one)
+
+```json
+{"labra_field": "customer_duns", "label": "Customer DUNS", "required": false}
+```
+
+- `required` defaults to `false`.
+- `201` when the field is new, `200` when an existing field's label/required was updated.
+- Writes one row in `labra_fields`. No template is written; every template shows the
+  field on its next GET (unmapped, unless that template already mapped it).
+
+`GET /labra-fields` lists the current field list.
+
+### `PATCH /mapping-templates/{template_id}/fields/{labra_field}`: one customer choice
+
+| Body | Effect |
+|---|---|
+| `{"unused": true}` | Hide an optional field (not fetched, not on the referral). Rejected for a required field. |
+| `{"crm_object": "Account", "crm_field": "DUNS__c"}` | Map the field. |
+| `{"unused": false}` | Back to unmapped (optional fields only). |
+
+Returns the full template. The choice lives on the template, so it survives label
+changes to the field.
+
 ## Schema
 
 Three SQLite tables ([app/schema.sql](app/schema.sql)):
