@@ -14,3 +14,11 @@ rate limits, one thing left out)._
 - Seed uses INSERT OR IGNORE so restarts never undo a label/required change.
 - Switched to `uvicorn app.main:create_app --factory` so importing the app in tests
   never creates a stray `labra.db`.
+- GET and crm-field-values both go through one `load_template()` (LEFT JOIN of
+  labra_fields + template_mappings), so "the template the customer sees" has one definition.
+- Create validates everything and returns ALL errors, then writes template + mappings in one
+  transaction, so a rejected create stores nothing.
+- Request model uses loose `str` types on purpose so business-rule failures (blank name,
+  bad crm_type) come back with our `fix`, not a generic schema error.
+- Duplicate CRM value check is case-insensitive (Salesforce API names are).
+- Added 409 on duplicate template id (not in the spec, but silently overwriting would be worse).

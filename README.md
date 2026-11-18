@@ -38,6 +38,48 @@ Interactive docs: http://localhost:8000/docs
 pytest
 ```
 
+## API
+
+All errors use one shape: `{"errors": [{"field", "crm_object", "crm_field", "received", "message", "fix"}]}`.
+
+### `POST /mapping-templates`: create a template
+
+```json
+{
+  "id": "northwind-default",
+  "name": "Northwind default",
+  "crm_type": "salesforce",
+  "mappings": [
+    {"labra_field": "company_name", "crm_object": "Account", "crm_field": "Name"},
+    {"labra_field": "website", "crm_object": "Account", "crm_field": "Website"},
+    {"labra_field": "country", "crm_object": "Account", "crm_field": "BillingCountry"},
+    {"labra_field": "expected_monthly_revenue", "crm_object": "Opportunity", "crm_field": "Amount"},
+    {"labra_field": "target_close_date", "crm_object": "Opportunity", "crm_field": "CloseDate"},
+    {"labra_field": "primary_sales_rep_email", "crm_object": "Contact", "crm_field": "Email"}
+  ]
+}
+```
+
+- `id` is optional (defaults to a slug of `name`).
+- A mapping may send `"unused": true` instead of `crm_object`/`crm_field` for an optional field.
+- `201` returns the template (same shape as GET). `422` lists every problem and stores nothing.
+  `409` if the id already exists.
+
+### `GET /mapping-templates/{template_id}`: read a template
+
+Returns every current Labra field. Unmapped fields have `crm_object: null`,
+`crm_field: null`, `mapped: false`.
+
+```json
+{
+  "id": "northwind-default", "name": "Northwind default", "crm_type": "salesforce",
+  "fields": [
+    {"labra_field": "company_name", "label": "Company name", "required": true,
+     "crm_object": "Account", "crm_field": "Name", "mapped": true, "unused": false}
+  ]
+}
+```
+
 ## Schema
 
 Three SQLite tables ([app/schema.sql](app/schema.sql)):
