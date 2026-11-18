@@ -80,7 +80,7 @@ curl -s -X POST localhost:8000/mapping-templates/northwind-default/crm-field-val
 
 ## Schema
 
-Three SQLite tables. Full SQL is in [app/schema.sql](app/schema.sql); the reasoning is in NOTES.md.
+Three SQLite tables. Full SQL is in [app/schema.sql](app/schema.sql).
 
 | Table | Holds |
 |---|---|
