@@ -78,19 +78,6 @@ curl -s -X POST localhost:8000/mapping-templates/northwind-default/crm-field-val
   -H 'Content-Type: application/json' -d '{"record_id": "opp-100"}' | python -m json.tool
 ```
 
-## Endpoints
-
-| Method | Path | What it does |
-|---|---|---|
-| `POST` | `/mapping-templates` | Create a template |
-| `GET` | `/mapping-templates/{id}` | Get a template with every current Labra field |
-| `PATCH` | `/mapping-templates/{id}/fields/{labra_field}` | Map a field, or mark it unused |
-| `POST` | `/labra-fields` | Add a new Labra field, or update its label/required |
-| `GET` | `/labra-fields` | List Labra fields |
-| `POST` | `/mapping-templates/{id}/crm-field-values` | Build and validate a referral for a CRM record |
-
-Request and response details: [NOTES.md, Appendix A](NOTES.md#appendix-a-api-reference).
-
 ## Schema
 
 Three SQLite tables. Full SQL is in [app/schema.sql](app/schema.sql); the reasoning is in NOTES.md.
