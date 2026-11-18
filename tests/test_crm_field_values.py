@@ -297,6 +297,21 @@ def test_required_new_field_unmapped_fails_and_names_the_field(client, crm, nort
     assert "customer_duns" in error["fix"]
 
 
+def test_field_marked_unused_then_made_required_fails(client, crm, northwind_saved):
+    client.post("/labra-fields", json=DUNS)
+    client.patch("/mapping-templates/northwind-default/fields/customer_duns", json={"unused": True})
+    client.post("/labra-fields", json={**DUNS, "required": True})  # AWS flips it later
+    seed_valid(crm)
+
+    response = post(client)
+
+    assert response.status_code == 422
+    [error] = response.json()["errors"]
+    assert error["field"] == "customer_duns"
+    assert "marked unused" in error["message"]
+    assert "customer_duns" in error["fix"]
+
+
 def test_required_new_field_blank_value_fails(client, crm, northwind_saved):
     _map_duns(client)
     client.post("/labra-fields", json={**DUNS, "required": True})

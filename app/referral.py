@@ -177,6 +177,14 @@ def build_referral(
 
     for f in template.fields:
         if f.unused:
+            if f.required:
+                # Marked unused while optional, then AWS made it required.
+                errors.append(ErrorItem(
+                    field=f.labra_field, received=None,
+                    message=f"{f.label} is now required by AWS but is marked unused on "
+                            f"template '{template.id}'.",
+                    fix=f"Map {f.labra_field} to a {crm} object and field on the template.",
+                ))
             continue
         rule = _rule_for(f)
 

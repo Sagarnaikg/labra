@@ -154,7 +154,8 @@ POST /labra-fields
    templates. It is cheap, but it happens on every GET and every referral, where a copied
    document would be a single key lookup.
 2. **Flipping a field to `required: true` affects every template at once.** Templates that
-   have not mapped it start failing referral validation, with a fix that names the field.
+   have not mapped it, or had marked it unused while it was optional, start failing
+   referral validation, with a fix that names the field.
    That is the correct signal, but it needs a rollout (see [section 9](#9-scoped-out-and-how-to-extend)).
 3. **The field list is global.** Customers cannot invent fields, which matches the brief.
 
@@ -220,13 +221,17 @@ that object. Failures are tracked per object:
   error that names the object ("The Salesforce rate limit held for Opportunity…"). Its
   fields, revenue and close date, are not also reported as missing.
 - **No record in any object:** `404`.
-- **No record in some objects:** one error per missing object. Its fields are skipped.
+- **No record in some objects:** `422`, with one error per missing object. Its fields are
+  skipped.
 - Objects that did return data are still validated.
 
 **Step 3: validate with Pydantic.** The referral model is built per request with
 `create_model`, from the same merged field list. There is no second hardcoded list of
 fields.
 - Required field: included, must be valid.
+- Required field that is unmapped, has a missing or blank CRM value, or is marked unused
+  (possible only if it was made required after the customer hid it): validation fails, and
+  the fix names the field.
 - Optional field, unmapped or with an empty CRM value: the key is left out.
 - Optional field with a value: included and validated (DUNS must be 9 digits).
 
@@ -355,7 +360,7 @@ would attach:
 | Retiring a Labra field | A `retired_at` column, filtered out of the join, instead of a hard delete that the foreign key blocks. |
 | Full-template update and delete | `PUT` reusing the create validation inside one transaction, guarded by the version check above. |
 | Parallel CRM calls | With a real async client, run the per-object fetches together (`asyncio.gather`), still one call per object. |
-| Postgres | The schema is plain SQL. Swap the connection layer; the upserts already use `ON CONFLICT`. |
+| Postgres | The schema is plain SQL. Swap the connection layer, and change the seed's SQLite-only `INSERT OR IGNORE` to `ON CONFLICT DO NOTHING`; the other upserts already use `ON CONFLICT`. |
 | Auth, UI, real CRM clients, sending to AWS | Out of scope per the brief. A real client only has to implement `fetch(object_name, record_id, fields)`. |
 
 ## 10. How it was built
@@ -402,14 +407,16 @@ Every row of the brief's test table, and where it is checked.
 | One Contoso (HubSpot) test | `test_contoso_hubspot_groups_companies_deals_contacts` |
 
 Beyond the table: every create rejection rule, DUNS mapped / empty / invalid / required,
-a new optional field keeping old referrals valid, the 10,000-template check, and unit tests
-for the fetch plan and the retry. 62 tests in total.
+a field hidden while optional and later made required, a new optional field keeping old
+referrals valid, the 10,000-template check, and unit tests for the fetch plan and the
+retry. 63 tests in total.
 
 ---
 
 ## Appendix A: API reference
 
 All errors use one shape: `{"errors": [{"field", "crm_object", "crm_field", "received", "message", "fix"}]}`.
+Responses from `crm-field-values` also carry `"referral": null` when there are errors.
 
 ### `POST /mapping-templates`: create a template
 
