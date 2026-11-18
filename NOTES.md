@@ -193,3 +193,108 @@ fix would attach:
   (`asyncio.gather`), still one call per object.
 - **Not built, as the brief asks:** the shared limiter, queue and cache, plus auth, a UI,
   and real Salesforce or HubSpot clients.
+
+---
+
+## Appendix A: API reference
+
+All errors use one shape: `{"errors": [{"field", "crm_object", "crm_field", "received", "message", "fix"}]}`.
+
+### `POST /mapping-templates`: create a template
+
+```json
+{
+  "id": "northwind-default",
+  "name": "Northwind default",
+  "crm_type": "salesforce",
+  "mappings": [
+    {"labra_field": "company_name", "crm_object": "Account", "crm_field": "Name"},
+    {"labra_field": "website", "crm_object": "Account", "crm_field": "Website"},
+    {"labra_field": "country", "crm_object": "Account", "crm_field": "BillingCountry"},
+    {"labra_field": "expected_monthly_revenue", "crm_object": "Opportunity", "crm_field": "Amount"},
+    {"labra_field": "target_close_date", "crm_object": "Opportunity", "crm_field": "CloseDate"},
+    {"labra_field": "primary_sales_rep_email", "crm_object": "Contact", "crm_field": "Email"}
+  ]
+}
+```
+
+- `id` is optional (defaults to a slug of `name`).
+- A mapping may send `"unused": true` instead of `crm_object`/`crm_field` for an optional field.
+- `201` returns the template (same shape as GET). `422` lists every problem and stores nothing.
+  `409` if the id already exists.
+
+### `GET /mapping-templates/{template_id}`: read a template
+
+Returns every current Labra field. Unmapped fields have `crm_object: null`,
+`crm_field: null`, `mapped: false`.
+
+```json
+{
+  "id": "northwind-default", "name": "Northwind default", "crm_type": "salesforce",
+  "fields": [
+    {"labra_field": "company_name", "label": "Company name", "required": true,
+     "crm_object": "Account", "crm_field": "Name", "mapped": true, "unused": false}
+  ]
+}
+```
+
+### `POST /labra-fields`: introduce a Labra field (or update one)
+
+```json
+{"labra_field": "customer_duns", "label": "Customer DUNS", "required": false}
+```
+
+- `required` defaults to `false`.
+- `201` when the field is new, `200` when an existing field's label/required was updated.
+- Writes one row in `labra_fields`. No template is written; every template shows the
+  field on its next GET (unmapped, unless that template already mapped it).
+
+`GET /labra-fields` lists the current field list.
+
+### `PATCH /mapping-templates/{template_id}/fields/{labra_field}`: one customer choice
+
+| Body | Effect |
+|---|---|
+| `{"unused": true}` | Hide an optional field (not fetched, not on the referral). Rejected for a required field. |
+| `{"crm_object": "Account", "crm_field": "DUNS__c"}` | Map the field. |
+| `{"unused": false}` | Back to unmapped (optional fields only). |
+
+Returns the full template. The choice lives on the template, so it survives label
+changes to the field.
+
+### `POST /mapping-templates/{template_id}/crm-field-values`: build a referral
+
+```json
+{"record_id": "opp-100"}
+```
+
+The body carries only the record id. The service reads the template the customer
+sees, groups mapped and used fields by CRM object (Northwind = 3 fetches: Account,
+Opportunity, Contact), asks the injected CRM client, then validates with Pydantic.
+
+| Status | When |
+|---|---|
+| `200` | `{"referral": {...}, "errors": []}` |
+| `422` | Invalid CRM data: `{"referral": null, "errors": [...]}`, one error per bad field |
+| `503` | An object was rate limited twice (`Retry-After` header); the error names the object, not its fields |
+| `404` | Unknown template, or no CRM object has that record id |
+
+When started with `uvicorn`, the app uses a demo FakeCrm seeded with `opp-100`
+(Northwind) and `deal-200` (Contoso), see [app/demo.py](app/demo.py). Tests inject
+their own `FakeCrm` through `create_app(crm)`.
+
+## Appendix B: Project layout
+
+```
+app/
+  main.py              create_app(crm, db, today, sleep): the seam tests use
+  db.py, schema.sql    SQLite schema + idempotent seed of the six fields
+  templates.py         create / get template, per-field choices (map, unused)
+  fields.py            introduce / update a Labra field
+  crm.py               FakeCrm, fetch plan (one call per object), single retry
+  referral.py          Pydantic referral model built from the field list + error translation
+  crm_field_values.py  POST .../crm-field-values
+  errors.py            shared error shape
+  demo.py              demo FakeCrm for local runs
+tests/                 pytest, no network; FakeCrm injected, "today" frozen
+```
