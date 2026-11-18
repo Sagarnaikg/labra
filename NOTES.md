@@ -9,6 +9,14 @@ choices. The list of Labra fields lives in one table and is joined in when a
 template is read.** Nothing is ever copied from the field list onto a template,
 so there is nothing to backfill when the list grows.
 
+**Short answers to the three schema questions**
+
+| Question | Answer |
+|---|---|
+| Where does the field list live, and where do Northwind's mappings live? | Field list: `labra_fields`, one row per field. Northwind's mappings: `template_mappings`, one row per mapped or unused field. |
+| When `customer_duns` is introduced, what is written? | One row in `labra_fields`. No `templates` or `template_mappings` row is written. |
+| At 10,000 templates, what does that cost, and what would I refuse to do by hand? | Still one row, about 10 ms, nothing to migrate. I refuse to copy the field list onto each template, and to edit or script-rewrite 10,000 templates. |
+
 ---
 
 ## 1. Schema
@@ -23,7 +31,7 @@ template_mappings (template_id FK, labra_field FK -> labra_fields.name,
                    CHECK (unused = 1 OR (crm_object IS NOT NULL AND crm_field IS NOT NULL)))
 ```
 
-Full DDL is in [app/schema.sql](app/schema.sql) and the README.
+Full DDL is in [app/schema.sql](app/schema.sql).
 
 **Where things live**
 - **The shared Labra field list:** `labra_fields`, one row per field. Owned by Labra/AWS.
@@ -55,12 +63,15 @@ Full DDL is in [app/schema.sql](app/schema.sql) and the README.
 
 ## 2. 10,000 existing templates, one new AWS field
 
-- **Cost of the deploy:** one `INSERT` into `labra_fields`. It takes about a millisecond and
-  does not depend on the number of templates. There is no migration and no backfill job.
-- **Evidence:** `test_new_field_reaches_10000_existing_templates_without_writing_them`
+- **Cost of the deploy:** one `INSERT` into `labra_fields`. The cost does not depend on
+  the number of templates. There is no migration and no backfill job.
+- **Measured** on a laptop with 10,000 templates (60,000 mapping rows), through the API:
+  - introducing the field: about 10 ms
+  - GET of one template afterwards: about 1 ms
+- **Evidence in tests:** `test_new_field_reaches_10000_existing_templates_without_writing_them`
   seeds 10,000 templates × 6 mappings, introduces the field, and asserts:
   - zero template rows changed
-  - the request took under 1 second (in practice a few ms)
+  - the request took under 1 second (a loose bound so slow CI machines don't fail it)
   - templates t-0, t-4999 and t-9999 all show `customer_duns` unmapped
 - **What is locked:** in SQLite, the database write lock for the length of a one-row insert.
   In Postgres, one new row. Templates stay readable and editable throughout. A referral
