@@ -104,6 +104,27 @@ Returns every current Labra field. Unmapped fields have `crm_object: null`,
 Returns the full template. The choice lives on the template, so it survives label
 changes to the field.
 
+### `POST /mapping-templates/{template_id}/crm-field-values`: build a referral
+
+```json
+{"record_id": "opp-100"}
+```
+
+The body carries only the record id. The service reads the template the customer
+sees, groups mapped and used fields by CRM object (Northwind = 3 fetches: Account,
+Opportunity, Contact), asks the injected CRM client, then validates with Pydantic.
+
+| Status | When |
+|---|---|
+| `200` | `{"referral": {...}, "errors": []}` |
+| `422` | Invalid CRM data: `{"referral": null, "errors": [...]}`, one error per bad field |
+| `503` | An object was rate limited twice (`Retry-After` header); the error names the object, not its fields |
+| `404` | Unknown template, or no CRM object has that record id |
+
+When started with `uvicorn`, the app uses a demo FakeCrm seeded with `opp-100`
+(Northwind) and `deal-200` (Contoso), see [app/demo.py](app/demo.py). Tests inject
+their own `FakeCrm` through `create_app(crm)`.
+
 ## Schema
 
 Three SQLite tables ([app/schema.sql](app/schema.sql)):

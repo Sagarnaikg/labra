@@ -42,3 +42,22 @@ rate limits, one thing left out)._
   try; a second RateLimited propagates. This is where a shared limiter would wrap later.
 - `fetch_all()` keeps rate-limited and not-found objects separate from fetched values, so
   the referral step can validate only objects that returned data.
+- Referral model is built per request with `create_model` from the template's merged
+  field list (same `load_template()` as GET), so a new field is on the model with no code
+  change. `FIELD_RULES` is a map of *format rules* by field name, not a field list: a field
+  with no rule is validated as non-blank text; a rule with no field is unused. Can't drift
+  into a missing/extra referral key. (Trade-off: a brand-new field that needs a special
+  format, like DUNS, needs a rule in code. Alternative: store a `value_type` column.)
+- Optional + unmapped or empty value -> key omitted. Required + missing/blank/unmapped -> error.
+- Pydantic errors are translated per field into message + fix naming Object.Field and the
+  CRM (Salesforce/HubSpot). One error per field; raw "Value error" text never leaks.
+- Rate limited twice -> 503 + Retry-After, one error naming the object; its fields are
+  skipped (not reported as missing). Other objects are still fetched and validated.
+- All objects not found -> 404. Some not found -> 422 naming the object, its fields skipped.
+- Website uses a custom urlparse check, not HttpUrl, because HttpUrl rewrites
+  "https://northwind.example" to "https://northwind.example/" (breaks the success body).
+- Gotcha hit: `StringConstraints` after a `BeforeValidator` in one Annotated is silently
+  dropped by Pydantic (blank company name passed). Fixed by nesting the constrained str.
+- "Today" is injected (`create_app(today=...)`), frozen to 2026-11-18 in tests.
+- Without an injected CRM, `create_app()` uses a seeded demo FakeCrm so the README
+  walkthrough works with uvicorn; routes never construct a client.
