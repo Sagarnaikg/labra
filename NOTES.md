@@ -35,3 +35,10 @@ rate limits, one thing left out)._
 - Open question: if a field is later flipped to required=true, templates that marked it
   unused/unmapped will fail referral validation with a "map this field" fix. I chose not
   to block the flip; AWS owns the list.
+- CRM layer (`app/crm.py`): `plan_fetches()` groups the template's mapped+used fields by
+  crm_object in template order, so Northwind = 3 fetches. Ten fields on one object = one
+  call. All-unused object = not fetched.
+- `fetch_with_retry()` wraps `crm.fetch`: one RateLimited -> sleep retry_after_ms -> one more
+  try; a second RateLimited propagates. This is where a shared limiter would wrap later.
+- `fetch_all()` keeps rate-limited and not-found objects separate from fetched values, so
+  the referral step can validate only objects that returned data.
