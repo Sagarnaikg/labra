@@ -36,7 +36,8 @@ template had to be edited by hand, or rewritten by a one-off script.
 - The customer's existing CRM mappings are still there.
 - Nobody edits that template, by hand or by script, to add the field.
 
-It must hold at 10,000 templates, and the cost of the design has to be stated.
+It must keep holding as the number of saved templates grows (the brief uses 10,000 as
+its example), and the cost of the design has to be stated.
 
 ## 2. The solution in one picture
 
@@ -87,7 +88,7 @@ template_mappings (template_id FK, labra_field FK -> labra_fields.name,
 |---|---|
 | Where does the field list live, and where do Northwind's mappings live? | Field list: `labra_fields`, one row per field. Northwind's mappings: `template_mappings`, one row per mapped or unused field, keyed by `('northwind-default', labra_field)`. |
 | When `customer_duns` is introduced, what is written? | One row in `labra_fields`. No `templates` or `template_mappings` row is written. |
-| At 10,000 templates, what does that cost, and what would I refuse to do by hand? | Still one row, about 10 ms, nothing to migrate. I refuse to copy the field list onto each template, and to edit or script-rewrite 10,000 templates. |
+| At 10,000 templates (or any number), what does that cost, and what would I refuse to do by hand? | Still one row, whatever the number of templates: about 10 ms, nothing to migrate. I refuse to copy the field list onto each template, and to edit or script-rewrite every saved template. |
 
 **Why each piece is there**
 - **No row means "not mapped".** A field missing from `template_mappings` is a state, not
@@ -125,13 +126,20 @@ POST /labra-fields
 - **Proof:** `test_introduce_customer_duns_shows_on_template_saved_before` snapshots every
   template and mapping row before the call and asserts they are identical afterwards.
 
-**At 10,000 templates**
-- **Cost:** one `INSERT`, whatever the number of templates. No migration, no backfill job.
-- **Measured** on a laptop with 10,000 templates (60,000 mapping rows), through the API:
+**At any number of templates**
+- **Cost does not grow with the number of templates.** Introducing a field is one
+  `INSERT`, whether there are 10, 10,000 or a million templates. No migration, no backfill
+  job. Nothing in the design is sized for a particular number.
+- **Read cost doesn't grow with it either.** GET of one template is an indexed lookup by
+  its own id, so it depends on the number of fields on the list, not on how many other
+  templates exist.
+- **Measured** on a laptop, using the brief's example of 10,000 templates (60,000 mapping
+  rows), through the API:
   - introducing the field: about 10 ms
   - GET of one template afterwards: about 1 ms
-- **Tested:** `test_new_field_reaches_10000_existing_templates_without_writing_them` seeds
-  10,000 templates × 6 mappings, introduces the field, and asserts:
+- **Tested:** `test_new_field_reaches_10000_existing_templates_without_writing_them` uses
+  the brief's 10,000 as a concrete check. It seeds 10,000 templates × 6 mappings,
+  introduces the field, and asserts:
   - zero template rows changed
   - the request took under 1 second (a loose bound so slow CI machines don't fail it)
   - templates t-0, t-4999 and t-9999 all show `customer_duns` unmapped
@@ -151,8 +159,10 @@ POST /labra-fields
 3. **The field list is global.** Customers cannot invent fields, which matches the brief.
 
 **The alternative I rejected:** a full JSON copy per template, plus a migration script
-for each new field. That is 10,000 row rewrites per field. It has to be batched to avoid
-long locks, and it races with customers who are editing templates while it runs.
+for each new field. That rewrites every saved template on every new field, so its cost
+grows with the number of templates (10,000 rewrites at the brief's example). It has to be
+batched to avoid long locks, and it races with customers who are editing templates while
+it runs.
 
 ## 5. Customer choices: map, unused, required
 
